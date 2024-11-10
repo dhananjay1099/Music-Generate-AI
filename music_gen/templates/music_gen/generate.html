@@ -1,0 +1,275 @@
+{% extends 'music_gen/base.html' %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <!-- Generation Form -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h2 class="text-center">Generate Music</h2>
+            </div>
+            <div class="card-body">
+                <form id="generateForm" method="post">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label class="form-label">Quick Suggestions:</label>
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="button" class="btn btn-outline-secondary btn-sm suggestion-btn" 
+                                    onclick="usePrompt('A happy pop song with upbeat melody')">Happy Pop</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm suggestion-btn" 
+                                    onclick="usePrompt('Relaxing piano music with soft melody')">Relaxing Piano</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm suggestion-btn" 
+                                    onclick="usePrompt('Electronic dance music with strong beats')">EDM</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm suggestion-btn" 
+                                    onclick="usePrompt('Acoustic guitar folk song')">Folk Guitar</button>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="prompt" class="form-label">Describe your music:</label>
+                        <textarea class="form-control" id="prompt" name="prompt" rows="3" required></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="duration" class="form-label">Duration (seconds):</label>
+                        <input type="number" class="form-control" id="duration" name="duration" value="30" min="1" max="300" required>
+                    </div>
+                    <div class="form-text text-muted">
+                        <strong>Tips for better results:</strong>
+                        <ul class="mb-0">
+                            <li>Describe the style, mood, and instruments you want</li>
+                            <li>Example: "A calm piano melody with soft strings in the background"</li>
+                            <li>For covers: "In the style of [song] by [artist]"</li>
+                            <li>Specify tempo: "fast", "slow", "moderate"</li>
+                        </ul>
+                    </div>
+                    <div id="generationProgress" class="mt-3" style="display: none;">
+                        <div class="progress">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                 role="progressbar" 
+                                 style="width: 0%"
+                                 id="progressBar">0%</div>
+                        </div>
+                        <p class="text-center mt-2" id="progressStatus">Initializing...</p>
+                    </div>
+                    <div class="text-center">
+                        <button type="submit" class="btn btn-primary" id="generateBtn">Generate Music</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Latest Generated Track -->
+        {% if tracks %}
+            {% with latest_track=tracks.0 %}
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h3 class="mb-0">Latest Generated Track</h3>
+                    </div>
+                    <div class="card-body">
+                        <h5 class="card-title">Prompt: {{ latest_track.prompt }}</h5>
+                        <p class="card-text">
+                            Status: 
+                            <span class="badge 
+                                {% if latest_track.status == 'completed' %}bg-success
+                                {% elif latest_track.status == 'processing' %}bg-info
+                                {% elif latest_track.status == 'pending' %}bg-warning
+                                {% else %}bg-danger{% endif %}">
+                                {{ latest_track.status|title }}
+                            </span>
+                        </p>
+                        
+                        {% if latest_track.audio_file %}
+                            <div class="mt-3">
+                                <audio id="audio-{{ latest_track.id }}" controls class="w-100" preload="metadata">
+                                    <source src="{{ latest_track.audio_file.url }}" type="audio/wav">
+                                    Your browser does not support the audio element.
+                                </audio>
+                                <div class="mt-2">
+                                    <a href="{{ latest_track.audio_file.url }}" class="btn btn-sm btn-primary" download>
+                                        Download Audio
+                                    </a>
+                                    <button class="btn btn-sm btn-info ms-2" onclick="debugAudio('audio-{{ latest_track.id }}')">
+                                        Debug Audio
+                                    </button>
+                                </div>
+                                <div id="debug-{{ latest_track.id }}" class="mt-2 small text-muted"></div>
+                            </div>
+                        {% endif %}
+
+                        {% if latest_track.error_message %}
+                            <div class="alert alert-danger mt-2">{{ latest_track.error_message }}</div>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endwith %}
+
+            <!-- History Toggle Button -->
+            <div class="text-center mb-3">
+                <button class="btn btn-secondary" onclick="toggleHistory()">
+                    <span id="historyButtonText">Show History</span>
+                </button>
+            </div>
+
+            <!-- History Section (Hidden by Default) -->
+            <div id="historySection" style="display: none;">
+                <h3 class="mb-3">Generation History</h3>
+                {% for track in tracks|slice:"1:" %}
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <h5 class="card-title">Prompt: {{ track.prompt }}</h5>
+                            <p class="text-muted small">Generated: {{ track.created_at|date:"F j, Y, g:i a" }}</p>
+                            {% if track.audio_file %}
+                                <div class="mt-3">
+                                    <audio id="audio-{{ track.id }}" controls class="w-100" preload="metadata">
+                                        <source src="{{ track.audio_file.url }}" type="audio/wav">
+                                        Your browser does not support the audio element.
+                                    </audio>
+                                    <div class="mt-2">
+                                        <a href="{{ track.audio_file.url }}" class="btn btn-sm btn-primary" download>
+                                            Download Audio
+                                        </a>
+                                    </div>
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+let progressInterval;
+
+function updateProgress() {
+    let progress = 0;
+    const progressBar = document.getElementById('progressBar');
+    const progressStatus = document.getElementById('progressStatus');
+    const stages = [
+        'Initializing model...',
+        'Processing prompt...',
+        'Generating music...',
+        'Finalizing audio...'
+    ];
+    let currentStage = 0;
+
+    progressInterval = setInterval(() => {
+        if (progress < 95) {
+            progress += Math.random() * 2;
+            if (progress > 25 && currentStage < 1) currentStage = 1;
+            if (progress > 50 && currentStage < 2) currentStage = 2;
+            if (progress > 75 && currentStage < 3) currentStage = 3;
+            
+            progressBar.style.width = `${Math.min(progress, 95)}%`;
+            progressBar.textContent = `${Math.round(Math.min(progress, 95))}%`;
+            progressStatus.textContent = stages[currentStage];
+        }
+    }, 500);
+}
+
+document.getElementById('generateForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('generateBtn');
+    const progressDiv = document.getElementById('generationProgress');
+    
+    btn.disabled = true;
+    btn.innerHTML = 'Generating...';
+    progressDiv.style.display = 'block';
+    updateProgress();
+    
+    fetch('', {
+        method: 'POST',
+        body: new FormData(this),
+        headers: {
+            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            pollTrackStatus(data.track_id);
+        } else {
+            alert('Error: ' + data.message);
+            resetForm();
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        resetForm();
+    });
+});
+
+function resetForm() {
+    const btn = document.getElementById('generateBtn');
+    const progressDiv = document.getElementById('generationProgress');
+    clearInterval(progressInterval);
+    btn.disabled = false;
+    btn.innerHTML = 'Generate Music';
+    progressDiv.style.display = 'none';
+}
+
+function pollTrackStatus(trackId) {
+    const checkStatus = setInterval(() => {
+        fetch(`/check_status/${trackId}/`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'completed' || data.status === 'failed') {
+                    clearInterval(checkStatus);
+                    clearInterval(progressInterval);
+                    location.reload();
+                }
+            })
+            .catch(error => {
+                console.error('Error polling status:', error);
+            });
+    }, 3000);  // Check more frequently
+}
+
+function toggleHistory() {
+    const historySection = document.getElementById('historySection');
+    const buttonText = document.getElementById('historyButtonText');
+    if (historySection.style.display === 'none') {
+        historySection.style.display = 'block';
+        buttonText.textContent = 'Hide History';
+    } else {
+        historySection.style.display = 'none';
+        buttonText.textContent = 'Show History';
+    }
+}
+
+function debugAudio(audioId) {
+    const audio = document.getElementById(audioId);
+    const debugDiv = document.getElementById('debug-' + audioId.split('-')[1]);
+    const source = audio.querySelector('source');
+    
+    let debugInfo = `
+        <strong>Audio Debug Info:</strong><br>
+        Source URL: ${source.src}<br>
+        Source type: ${source.type}<br>
+        Audio ready state: ${audio.readyState}<br>
+        Duration: ${audio.duration}<br>
+        Paused: ${audio.paused}<br>
+        Error: ${audio.error ? audio.error.code : 'None'}<br>
+    `;
+    
+    // Try to load the audio file directly
+    fetch(source.src)
+        .then(response => {
+            debugInfo += `File accessible: Yes<br>
+                         Content type: ${response.headers.get('content-type')}<br>
+                         Content length: ${response.headers.get('content-length')} bytes<br>`;
+            debugDiv.innerHTML = debugInfo;
+        })
+        .catch(error => {
+            debugInfo += `File accessible: No<br>Error: ${error}<br>`;
+            debugDiv.innerHTML = debugInfo;
+        });
+        
+    debugDiv.innerHTML = debugInfo;
+}
+
+function usePrompt(prompt) {
+    document.getElementById('prompt').value = prompt;
+}
+</script>
+{% endblock %}
